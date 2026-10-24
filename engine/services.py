@@ -62,6 +62,8 @@ def build_services(settings: Settings, store: VectorStore | None = None, embedde
         settings.gemini_api_key.get_secret_value() if settings.gemini_api_key else None,
         settings.gemini_model, settings.gemini_fallback_model, settings.llm_timeout_s, settings.llm_max_retries,
         settings.llm_min_interval_s,
+        thinking_levels={settings.gemini_model: settings.gemini_thinking_level,
+                         settings.gemini_fallback_model: settings.gemini_fallback_thinking_level},
     )
     svc = Services(settings=settings, store=store, embedder=embedder, retriever=retriever, ingestion=ingestion, llm=llm,
                    investigator=None, answer_cache=TTLCache(512, settings.cache_ttl_s))  # type: ignore[arg-type]

@@ -13,8 +13,11 @@ import time
 from collections import defaultdict, deque
 from typing import Any
 
-# Paid-tier list prices (USD per 1M tokens) used to report what the free-tier traffic *would* cost.
+# Paid-tier prices (USD per 1M input / output tokens) used to report what the free-tier traffic *would* cost.
+# Approximate: update from https://ai.google.dev/pricing when models change.
 PRICES = {
+    "gemini-3.5-flash-lite": (0.10, 0.40),
+    "gemini-3.5-flash": (0.30, 2.50),
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.40),
     "gemini-2.5-pro": (1.25, 10.0),

@@ -33,7 +33,7 @@ API = "https://generativelanguage.googleapis.com/v1beta"
 class LLMError(RuntimeError):
     def __init__(self, kind: str, message: str, status: int | None = None):
         super().__init__(f"{kind}: {message}")
-        self.kind = kind  # auth | rate_limit | unavailable | timeout | bad_request | blocked | not_configured
+        self.kind = kind  # auth | rate_limit | unavailable | timeout | not_found | bad_request | blocked | not_configured
         self.status = status
 
 
@@ -71,8 +71,11 @@ def _retry_delay_from(body: dict[str, Any]) -> float | None:
 
 class GeminiClient:
     def __init__(self, api_key: str | None, model: str, fallback_model: str | None = None, timeout_s: float = 60.0,
-                 max_retries: int = 4, min_interval_s: float = 0.0, transport: httpx.BaseTransport | None = None):
+                 max_retries: int = 4, min_interval_s: float = 0.0, transport: httpx.BaseTransport | None = None,
+                 thinking_levels: dict[str, str] | None = None):
         self.api_key = api_key
+        # Gemini 3.x models take a thinking *level* per model (e.g. "low"; lite models also accept "minimal").
+        self.thinking_levels = thinking_levels or {}
         self.model = model
         self.fallback_model = fallback_model
         self.max_retries = max_retries
@@ -118,11 +121,13 @@ class GeminiClient:
             b = dict(body)
             if thinking_budget is not None and model.startswith("gemini-2.5"):
                 b["generationConfig"] = {**body["generationConfig"], "thinkingConfig": {"thinkingBudget": thinking_budget}}
+            elif self.thinking_levels.get(model):
+                b["generationConfig"] = {**body["generationConfig"], "thinkingConfig": {"thinkingLevel": self.thinking_levels[model]}}
             try:
                 return self._call_with_retries(model, b, purpose)
             except LLMError as e:
                 last_err = e
-                if e.kind not in ("rate_limit", "unavailable", "timeout"):
+                if e.kind not in ("rate_limit", "unavailable", "timeout", "not_found"):
                     raise
                 if model != models[-1]:
                     log.warning("model %s failed (%s); trying fallback", model, e.kind)
@@ -157,6 +162,8 @@ class GeminiClient:
                 delay = _retry_delay_from(payload)
                 if r.status_code in (401, 403):
                     raise LLMError("auth", msg, r.status_code)
+                if r.status_code == 404:  # model retired / not available to this key: no point retrying it
+                    raise LLMError("not_found", msg, 404)
                 if r.status_code == 429:
                     err = LLMError("rate_limit", msg, 429)
                 elif r.status_code >= 500:
