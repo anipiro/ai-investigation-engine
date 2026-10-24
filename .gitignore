@@ -17,3 +17,6 @@ eval/results/e2e_*.jsonl.bak
 build/
 .vercel/
 .env.local
+.agents/
+.claude/
+skills-lock.json
