@@ -331,7 +331,7 @@ async function loadSystem() {
     const llm = Object.entries(m.llm || {});
     const lat = Object.entries(m.latency || {}).filter(([k]) => !k.startsWith("http.GET /static"));
     $("#system").innerHTML =
-      panel("Services", [["Vector database", `${h.vector_db} (${h.qdrant})`], ["Language model", h.llm_configured ? h.llm_model : "not configured"],
+      panel("Services", [["Vector database", `${h.vector_db} (${h.vector_backend})`], ["Language model", h.llm_configured ? h.llm_model : "not configured"],
         ["Fallback model", h.fallback_model], ["Embeddings", h.embedding_model], ["Re-ranker", h.reranker || "off"]]) +
       panel("Index", [["Documents", s.documents.toLocaleString()], ["Passages", s.chunks.toLocaleString()],
         ...Object.entries(s.documents_by_source).map(([k, v]) => [SOURCE_NAMES[k] || k, v.toLocaleString()]),

@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     # Free tier is rate limited per minute; we pace calls client-side.
     llm_min_interval_s: float = 0.0
 
-    # --- Vector store (Qdrant) ---
+    # --- Vector store ---
+    # "qdrant" (local server / Qdrant Cloud / embedded) or "pgvector" (Neon Postgres in production)
+    store_backend: Literal["qdrant", "pgvector"] = "qdrant"
+    database_url: SecretStr | None = None
     qdrant_url: str | None = None  # e.g. https://xyz.cloud.qdrant.io:6333 ; None -> embedded local mode
     qdrant_api_key: SecretStr | None = None
     qdrant_path: str = "data/qdrant_local"  # used only when qdrant_url is empty
