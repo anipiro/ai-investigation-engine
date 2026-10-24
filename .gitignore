@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+data/raw/
+data/corpus/
+data/cache/
+data/models/
+data/qdrant*/
+data/northwind/
+data/*.log
+data/ingest_report_*.json
+.pytest_cache/
+eval/results/e2e_*.jsonl.bak

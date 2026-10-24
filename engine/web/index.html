@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Investigation Engine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <h1>Investigation Engine</h1>
+      <p class="corpus" id="corpus-line">Connecting to the index…</p>
+    </div>
+  </div>
+  <nav class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="investigate">Investigate</button>
+    <button role="tab" aria-selected="false" data-tab="documents">Documents</button>
+    <button role="tab" aria-selected="false" data-tab="search">Search lab</button>
+    <button role="tab" aria-selected="false" data-tab="system">System</button>
+  </nav>
+</header>
+
+<main>
+  <!-- ============================== Investigate -->
+  <section id="tab-investigate" class="tab-panel" role="tabpanel">
+    <form id="ask-form" class="ask">
+      <label for="question" class="sr-only">Question</label>
+      <textarea id="question" rows="2" required minlength="3"
+        placeholder="Which system changes caused the March payment delays, which services were affected, and which documents confirm it?"></textarea>
+      <div class="ask-row">
+        <div class="ask-options">
+          <label><input type="radio" name="mode" value="agentic" checked> Multi-step investigation</label>
+          <label><input type="radio" name="mode" value="simple"> Single retrieval</label>
+          <select id="source-filter" aria-label="Limit to source">
+            <option value="">All sources</option>
+            <option value="northwind">Northwind Pay incident files</option>
+            <option value="postmortems">Public post-mortems</option>
+            <option value="hotpotqa">Wikipedia paragraphs (HotpotQA)</option>
+            <option value="upload">My uploads</option>
+          </select>
+        </div>
+        <button type="submit" class="primary" id="ask-btn">Investigate</button>
+      </div>
+      <div class="examples" id="examples"></div>
+    </form>
+
+    <div class="workbench" id="workbench" hidden>
+      <aside class="trail">
+        <h2>Investigation steps</h2>
+        <ol id="trail"></ol>
+        <p class="usage" id="usage"></p>
+      </aside>
+      <div class="findings">
+        <article class="answer" id="answer" aria-live="polite"></article>
+        <h2 class="exhibits-title">Evidence</h2>
+        <p class="hint">Highlighted passages were cited in the answer. Point at a citation to find its passage.</p>
+        <ol class="exhibits" id="exhibits"></ol>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== Documents -->
+  <section id="tab-documents" class="tab-panel" role="tabpanel" hidden>
+    <div class="doc-tools">
+      <form id="upload-form" class="upload">
+        <label class="drop" id="drop">
+          <input type="file" id="files" multiple accept=".pdf,.docx,.md,.txt,.html,.htm,.json,.jsonl">
+          <strong>Add documents</strong>
+          <span>PDF, Word, Markdown, text, HTML or JSON — up to 10 MB each. Re-uploading a file with the same name updates it.</span>
+        </label>
+        <ul id="upload-results" class="upload-results"></ul>
+      </form>
+      <form id="doc-filter" class="doc-filter">
+        <input type="search" id="doc-q" placeholder="Find by title">
+        <select id="doc-source" aria-label="Source">
+          <option value="">All sources</option>
+          <option value="upload">My uploads</option>
+          <option value="northwind">Northwind Pay</option>
+          <option value="postmortems">Post-mortems</option>
+          <option value="hotpotqa">HotpotQA</option>
+        </select>
+        <button type="submit">Filter</button>
+      </form>
+    </div>
+    <div class="doc-layout">
+      <table class="doc-table">
+        <thead><tr><th>Title</th><th>Source</th><th>Format</th><th class="num">Chunks</th><th></th></tr></thead>
+        <tbody id="doc-rows"></tbody>
+      </table>
+      <aside class="doc-detail" id="doc-detail" hidden></aside>
+    </div>
+    <button id="doc-more" class="quiet" hidden>Load more</button>
+  </section>
+
+  <!-- ============================== Search lab -->
+  <section id="tab-search" class="tab-panel" role="tabpanel" hidden>
+    <form id="search-form" class="search-form">
+      <input type="search" id="search-q" required placeholder="Search passages, e.g. CHG-1187 pool size">
+      <select id="search-mode" aria-label="Retriever">
+        <option value="hybrid">Hybrid (semantic + keyword)</option>
+        <option value="dense">Semantic only</option>
+        <option value="sparse">Keyword (BM25) only</option>
+      </select>
+      <label><input type="checkbox" id="search-rerank" checked> Re-rank</label>
+      <label><input type="checkbox" id="search-mmr" checked> Diversify</label>
+      <button type="submit" class="primary">Search</button>
+    </form>
+    <p class="hint" id="search-timing"></p>
+    <ol class="exhibits" id="search-results"></ol>
+  </section>
+
+  <!-- ============================== System -->
+  <section id="tab-system" class="tab-panel" role="tabpanel" hidden>
+    <div class="system-grid" id="system"></div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>
