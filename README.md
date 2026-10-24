@@ -45,7 +45,7 @@ An evidence-first question-answering system over a 66,000+ document collection. 
 | Embeddings | `BAAI/bge-small-en-v1.5` (384-d) via fastembed / ONNX, run locally | Free, no rate limits for 66k+ documents; small enough for a CPU Space. |
 | Keyword search | Own BM25 encoder → Qdrant sparse vectors with IDF modifier | Exact BM25 with idf computed over the live collection, so adds/deletes need no re-encoding. |
 | Re-ranker | `Xenova/ms-marco-MiniLM-L-6-v2` cross-encoder (ONNX) | Large precision gain for ~0.5–1 s of CPU per query. |
-| LLM | Google Gemini `gemini-2.5-flash`, fallback `gemini-2.5-flash-lite` (free tier) | Free API, native function calling and JSON-schema output. |
+| LLM | Google Gemini `gemini-3.5-flash` (thinking level "low"), fallback `gemini-3.5-flash-lite` (free tier) | Free API, native function calling and JSON-schema output. (Gemini 2.5 models are no longer offered to new API keys; the client also falls back automatically on 404.) |
 | UI | Static HTML/CSS/JS served by FastAPI | No build step; the priority is functionality, not visual complexity. |
 
 ## Data

@@ -18,8 +18,10 @@ class Settings(BaseSettings):
 
     # --- LLM (Google Gemini) ---
     gemini_api_key: SecretStr | None = None
-    gemini_model: str = "gemini-2.5-flash"
-    gemini_fallback_model: str = "gemini-2.5-flash-lite"
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_fallback_model: str = "gemini-3.5-flash-lite"
+    gemini_thinking_level: str = "low"
+    gemini_fallback_thinking_level: str = "minimal"
     llm_timeout_s: float = 60.0
     llm_max_retries: int = 4
     # Free tier is rate limited per minute; we pace calls client-side.
