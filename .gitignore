@@ -12,3 +12,8 @@ data/*.log
 data/ingest_report_*.json
 .pytest_cache/
 eval/results/e2e_*.jsonl.bak
+.vercel
+.env*
+build/
+.vercel/
+.env.local

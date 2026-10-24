@@ -134,13 +134,13 @@ def create_app(services: Services | None = None, settings: Settings | None = Non
     # ------------------------------------------------------------------ system
     @app.get("/api/health")
     def health() -> dict[str, Any]:
-        s = state["svc"]
-        if s is None:
-            return {"status": "starting"}
+        # On serverless platforms a background warm-up thread may be frozen between requests,
+        # so health builds the services itself (first call on a cold instance waits for model loading).
+        s = svc()
         return {"status": "ok", "vector_db": "ok" if s.store.ping() else "unreachable", "llm_configured": s.llm.configured,
                 "llm_model": s.llm.model, "fallback_model": s.llm.fallback_model, "embedding_model": getattr(s.embedder, "name", "?"),
                 "reranker": s.retriever.cross_encoder.name if s.retriever.cross_encoder else None,
-                "qdrant": "server" if settings.qdrant_url else "embedded"}
+                "vector_backend": settings.store_backend if settings.store_backend == "pgvector" else ("qdrant server" if settings.qdrant_url else "qdrant embedded")}
 
     @app.get("/api/stats")
     def stats(s: Services = Depends(svc)) -> dict[str, Any]:

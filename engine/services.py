@@ -46,7 +46,13 @@ class Services:
 
 def build_services(settings: Settings, store: VectorStore | None = None, embedder=None, cross_encoder=None,
                    llm: GeminiClient | None = None) -> Services:
-    store = store or VectorStore(settings)
+    if store is None:
+        if settings.store_backend == "pgvector":
+            from engine.retrieval.pgstore import PgVectorStore
+
+            store = PgVectorStore(settings)
+        else:
+            store = VectorStore(settings)
     embedder = embedder or FastEmbedder(settings.embedding_model, cache_dir=settings.model_cache_dir)
     if cross_encoder is None and settings.enable_cross_encoder:
         try:
