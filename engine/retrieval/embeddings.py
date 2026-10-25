@@ -25,11 +25,11 @@ class Embedder(Protocol):
 
 
 class FastEmbedder:
-    def __init__(self, model_name: str, cache_dir: str | None = None, query_cache_size: int = 2048):
+    def __init__(self, model_name: str, cache_dir: str | None = None, query_cache_size: int = 2048, threads: int | None = None):
         from fastembed import TextEmbedding
 
         self.name = model_name
-        self._model = TextEmbedding(model_name=model_name, cache_dir=cache_dir)
+        self._model = TextEmbedding(model_name=model_name, cache_dir=cache_dir, threads=threads)
         self.dim = len(next(iter(self._model.query_embed(["probe"]))))
         self._qcache: OrderedDict[str, list[float]] = OrderedDict()
         self._qcache_size = query_cache_size

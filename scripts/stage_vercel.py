@@ -1,6 +1,6 @@
-"""Stage a minimal Vercel deployment in build/vercel/ (code only — no data, tests or local caches).
+"""Stage a minimal Vercel deployment in ../ai-investigation-engine-vercel/ (code only — no data, tests or local caches).
 
-  uv run python scripts/stage_vercel.py && cd build/vercel && vercel deploy --prod
+  uv run python scripts/stage_vercel.py && cd ../ai-investigation-engine-vercel && vercel deploy --prod
 
 Vercel's Python runtime builds the FastAPI app in main.py into one Fluid Compute function.
 The ONNX models are downloaded to /tmp on a cold start (MODEL_CACHE_DIR=/tmp/models).
@@ -14,7 +14,9 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "build" / "vercel"
+# Outside the git checkout: Vercel attributes git-linked CLI deploys to the commit author, who may not be a
+# member of the Vercel team. A plain directory deploys as the logged-in CLI user.
+OUT = ROOT.parent / f"{ROOT.name}-vercel"
 
 
 def main() -> None:

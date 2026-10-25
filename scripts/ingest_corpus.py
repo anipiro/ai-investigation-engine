@@ -39,10 +39,12 @@ from engine.retrieval.store import VectorStore  # noqa: E402
 log = logging.getLogger("ingest")
 
 
-def iter_jsonl(path: Path, limit: int | None):
+def iter_jsonl(path: Path, limit: int | None, skip: int = 0):
     with open(path, encoding="utf-8") as f:
         for i, line in enumerate(f):
-            if limit is not None and i >= limit:
+            if i < skip:
+                continue
+            if limit is not None and i >= skip + limit:
                 break
             yield json.loads(line)
 
@@ -52,7 +54,8 @@ def main() -> None:
     ap.add_argument("--prefix", default=None, help="collection prefix (default from settings)")
     ap.add_argument("--strategy", choices=["recursive", "fixed"], default=None)
     ap.add_argument("--embedding-model", default=None)
-    ap.add_argument("--limit", type=int, default=None, help="max docs per JSONL source (debugging)")
+    ap.add_argument("--limit", type=int, default=None, help="max docs per JSONL source")
+    ap.add_argument("--skip", type=int, default=0, help="skip the first N docs of each JSONL source (resume in segments)")
     ap.add_argument("--only", choices=["hotpotqa", "postmortems", "northwind"], action="append")
     ap.add_argument("--recreate", action="store_true", help="drop the collections first")
     args = ap.parse_args()
@@ -78,7 +81,7 @@ def main() -> None:
     summary: dict = {}
     for name in ("postmortems", "hotpotqa"):
         if name in only:
-            st = svc.bulk_ingest(iter_jsonl(ROOT / "data" / "corpus" / f"{name}.jsonl", args.limit))
+            st = svc.bulk_ingest(iter_jsonl(ROOT / "data" / "corpus" / f"{name}.jsonl", args.limit, args.skip))
             summary[name] = st
             log.info("%s done: %s", name, st)
     if "northwind" in only:

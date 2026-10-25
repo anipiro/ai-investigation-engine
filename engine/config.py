@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
     enable_cross_encoder: bool = True
     model_cache_dir: str = "data/models"
+    onnx_threads: int | None = None  # set to the real vCPU count on serverless hosts (os.cpu_count() over-reports)
+    rerank_pool: int = 30  # candidates re-scored by the cross-encoder
 
     # --- Chunking ---
     chunk_strategy: Literal["recursive", "fixed"] = "recursive"

@@ -37,7 +37,7 @@ except ImportError:
 from metrics import all_gold_at_k, exact_match, f1, keyword_hit, mean, mrr, ndcg_at_k, recall_at_k  # noqa: E402
 
 from engine.config import Settings  # noqa: E402
-from engine.llm.gemini import LLMError  # noqa: E402
+from engine.llm.gemini import GeminiClient, LLMError  # noqa: E402
 from engine.observability import setup_logging  # noqa: E402
 from engine.retrieval.hybrid import RetrievalConfig  # noqa: E402
 from engine.services import build_services  # noqa: E402
@@ -80,10 +80,15 @@ def run_retrieval(args) -> None:
     fixed = Settings(collection_prefix="aie_fixed").collection("chunks")
     if svc.store.client.collection_exists(fixed):
         collections["fixed"] = fixed
-    rows = []
+    out_path = RESULTS / "retrieval.json"
+    rows = json.loads(out_path.read_text(encoding="utf-8")) if out_path.exists() else []
     for chunking, coll in collections.items():
+        if args.chunking and chunking != args.chunking:
+            continue
         for name, over in configs.items():
             if chunking == "fixed" and name not in ("dense", "hybrid_rrf+title", "hybrid+rerank+mmr (default)"):
+                continue
+            if args.config and args.config not in name:
                 continue
             per_q = []
             t0 = time.perf_counter()
@@ -104,11 +109,13 @@ def run_retrieval(args) -> None:
                 by_cat[cat] = {"n": len(sub), "r10": round(mean(p["r10"] for p in sub), 4), "mrr": round(mean(p["mrr"] for p in sub), 4)}
             row = {"config": name, "chunking": chunking, "n": len(per_q), **agg, "ms_per_query": round(ms, 1), "by_category": by_cat,
                    "per_question": per_q}
-            rows.append(row)
+            rows = [r for r in rows if (r["config"], r["chunking"]) != (name, chunking)] + [row]
+            RESULTS.mkdir(parents=True, exist_ok=True)
+            order = {(n, ch): i for i, (ch, n) in enumerate((ch, n) for ch in ("recursive", "fixed") for n in RETRIEVAL_CONFIGS)}
+            rows.sort(key=lambda r: order.get((r["config"], r["chunking"]), 99))
+            out_path.write_text(json.dumps(rows, indent=1), encoding="utf-8")
             log.info("%-30s %-9s R@5=%.3f R@10=%.3f all@10=%.3f MRR=%.3f (%.0f ms/q)", name, chunking, agg["r5"], agg["r10"],
                      agg["all10"], agg["mrr"], ms)
-    RESULTS.mkdir(parents=True, exist_ok=True)
-    (RESULTS / "retrieval.json").write_text(json.dumps(rows, indent=1), encoding="utf-8")
 
 
 # ====================================================================== end-to-end
@@ -130,7 +137,7 @@ def judge(llm, q: dict, res: dict) -> dict:
     text = f"[status: {res['status']}] {res.get('short_answer', '')} — {res.get('answer', '')}"
     try:
         r = llm.generate([{"role": "user", "parts": [{"text": JUDGE_PROMPT.format(question=q["question"], reference=q["answer"], answer=text)}]}],
-                         json_schema=JUDGE_SCHEMA, temperature=0.0, max_output_tokens=300, purpose="judge")
+                         json_schema=JUDGE_SCHEMA, temperature=0.0, max_output_tokens=1000, purpose="judge")
         return r.json()
     except (LLMError, ValueError) as e:
         return {"verdict": "error", "reason": str(e)[:200]}
@@ -164,8 +171,13 @@ def run_e2e(args) -> None:
     overrides = {}
     if args.model:
         overrides["gemini_model"] = args.model
+    if args.fallback_model:
+        overrides["gemini_fallback_model"] = args.fallback_model
     s = Settings(llm_min_interval_s=args.min_interval, **overrides)
     svc = build_services(s)
+    # The judge runs on a different model so it does not consume the answering model's free-tier daily quota.
+    judge_llm = GeminiClient(s.gemini_api_key.get_secret_value(), args.judge_model, s.gemini_fallback_model,
+                             min_interval_s=args.min_interval, thinking_levels={args.judge_model: "low"})
     questions = load("questions.jsonl")
     if args.only:
         questions = [q for q in questions if q["id"] in args.only]
@@ -192,10 +204,28 @@ def run_e2e(args) -> None:
                        "sources": [{"doc_id": x["doc_id"], "label": x["label"], "step": x["step"]} for x in res["sources"]],
                        "trace": res["trace"]}
                 rec["result"]["sources"] = rec["sources"]
-                rec["judge"] = judge(svc.llm, q, res)
+                rec["judge"] = judge(judge_llm, q, res)
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 f.flush()
                 log.info("%s %s -> %s / judge=%s (%d ms)", mode, q["id"], res["status"], rec["judge"]["verdict"], res["usage"]["latency_ms"])
+
+
+def run_rejudge(args) -> None:
+    """Re-grade cached answers whose judge call failed (e.g. a transient 503)."""
+    s = Settings()
+    judge_llm = GeminiClient(s.gemini_api_key.get_secret_value(), args.judge_model, s.gemini_fallback_model,
+                             thinking_levels={args.judge_model: "low"})
+    questions = {q["id"]: q for q in load("questions.jsonl")}
+    for path in sorted(RESULTS.glob("e2e_*.jsonl")):
+        recs = [json.loads(line) for line in open(path, encoding="utf-8")]
+        changed = 0
+        for r in recs:
+            if r.get("judge", {}).get("verdict") == "error":
+                r["judge"] = judge(judge_llm, questions[r["id"]], r["result"])
+                changed += 1
+                log.info("%s %s rejudged -> %s", path.stem, r["id"], r["judge"]["verdict"])
+        if changed:
+            path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs), encoding="utf-8")
 
 
 # ====================================================================== report
@@ -285,16 +315,22 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("retrieval")
     r.add_argument("--limit", type=int)
+    r.add_argument("--config", help="run only configs whose name contains this text (results are merged)")
+    r.add_argument("--chunking", choices=["recursive", "fixed"])
     e = sub.add_parser("e2e")
     e.add_argument("--modes", nargs="+", default=["simple", "agentic"])
     e.add_argument("--only", nargs="*")
     e.add_argument("--model")
+    e.add_argument("--fallback-model")
+    e.add_argument("--judge-model", default="gemini-3.1-flash-lite")
     e.add_argument("--min-interval", type=float, default=4.5, help="seconds between LLM calls (free-tier RPM)")
     e.add_argument("--fresh", action="store_true")
     sub.add_parser("report")
+    rj = sub.add_parser("rejudge")
+    rj.add_argument("--judge-model", default="gemini-3.1-flash-lite")
     args = ap.parse_args()
     setup_logging("INFO")
-    {"retrieval": run_retrieval, "e2e": run_e2e, "report": run_report}[args.cmd](args)
+    {"retrieval": run_retrieval, "e2e": run_e2e, "report": run_report, "rejudge": run_rejudge}[args.cmd](args)
 
 
 if __name__ == "__main__":
