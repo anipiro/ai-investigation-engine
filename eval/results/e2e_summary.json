@@ -1,0 +1,162 @@
+[
+ {
+  "mode": "agentic",
+  "n": 49,
+  "judge": 0.9184,
+  "em": 0.3878,
+  "f1": 0.5758,
+  "keyword": 0.907,
+  "evidence_recall": 0.9767,
+  "cit_precision": 0.9246,
+  "cit_recall": 0.9206,
+  "abstained": 1.0,
+  "false_abstention": 0.0714,
+  "conflict_detected": 1.0,
+  "injection_resisted": 1.0,
+  "latency_ms": 9254.0204,
+  "llm_calls": 3.4694,
+  "tokens": 5475.4082,
+  "by_category": {
+   "hotpot_bridge": {
+    "n": 13,
+    "judge": 0.769,
+    "keyword": 0.846,
+    "cit_precision": 0.972
+   },
+   "hotpot_comparison": {
+    "n": 11,
+    "judge": 0.909,
+    "keyword": 0.818,
+    "cit_precision": 0.894
+   },
+   "injection": {
+    "n": 2,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   },
+   "northwind_conflict": {
+    "n": 3,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 0.889
+   },
+   "northwind_multi": {
+    "n": 2,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   },
+   "northwind_multihop": {
+    "n": 2,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 0.583
+   },
+   "northwind_simple": {
+    "n": 2,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 0.75
+   },
+   "postmortem": {
+    "n": 6,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   },
+   "postmortem_multi": {
+    "n": 1,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   },
+   "unanswerable": {
+    "n": 7,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   }
+  }
+ },
+ {
+  "mode": "simple",
+  "n": 49,
+  "judge": 0.9184,
+  "em": 0.3673,
+  "f1": 0.5503,
+  "keyword": 0.907,
+  "evidence_recall": 0.9767,
+  "cit_precision": 0.9226,
+  "cit_recall": 0.9444,
+  "abstained": 1.0,
+  "false_abstention": 0.0714,
+  "conflict_detected": 1.0,
+  "injection_resisted": 1.0,
+  "latency_ms": 2527.8367,
+  "llm_calls": 1.0,
+  "tokens": 1949.9184,
+  "by_category": {
+   "hotpot_bridge": {
+    "n": 13,
+    "judge": 0.769,
+    "keyword": 0.846,
+    "cit_precision": 0.972
+   },
+   "hotpot_comparison": {
+    "n": 11,
+    "judge": 0.909,
+    "keyword": 0.818,
+    "cit_precision": 0.886
+   },
+   "injection": {
+    "n": 2,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   },
+   "northwind_conflict": {
+    "n": 3,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 0.889
+   },
+   "northwind_multi": {
+    "n": 2,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   },
+   "northwind_multihop": {
+    "n": 2,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 0.583
+   },
+   "northwind_simple": {
+    "n": 2,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 0.75
+   },
+   "postmortem": {
+    "n": 6,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   },
+   "postmortem_multi": {
+    "n": 1,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   },
+   "unanswerable": {
+    "n": 7,
+    "judge": 1.0,
+    "keyword": 1.0,
+    "cit_precision": 1.0
+   }
+  }
+ }
+]

@@ -5,7 +5,7 @@ An evidence-first question-answering system over a 66,000+ document collection. 
 > *"Which system changes caused the payment processing delays in March 2024, which services were affected, and which documents confirm this?"*
 > → plans sub-questions → searches the change log, incident report and post-mortem → follows the change ids it discovers → answers with `[S#]` citations, and points out that the incident report and the post-mortem disagree on the duration and on the primary root cause.
 
-- **Live demo:** _see the link at the top of the GitHub repository (Hugging Face Space)_
+- **Live demo:** https://ai-investigation-engine.vercel.app (API docs: `/docs`)
 - **Evaluation report:** [EVALUATION.md](EVALUATION.md)
 
 ## Contents
@@ -25,11 +25,11 @@ An evidence-first question-answering system over a 66,000+ document collection. 
 ## Architecture
 
 ```
-                 ┌──────────────────────────── FastAPI (Hugging Face Space, Docker) ───────────────────────────┐
+                 ┌──────────────────────── FastAPI (Vercel Python function, Fluid Compute) ────────────────────┐
  browser ──HTTP──▶  REST + SSE  ─┬─ /api/documents ──▶ parsers ─▶ chunker ─▶ dedup ─▶ embed + BM25 ─┐         │
   (static UI)     │              │                                                                    ▼         │
-                  │              ├─ /api/search ───▶ HybridRetriever ◀──── dense + sparse queries ── Qdrant ◀───┼── Qdrant Cloud
-                  │              │                   (RRF, title boost, cross-encoder, MMR)                     │   (free 1 GB)
+                  │              ├─ /api/search ───▶ HybridRetriever ◀── dense + sparse queries ── VectorStore ◀─┼── Neon Postgres
+                  │              │                   (RRF, title boost, cross-encoder, MMR)       (pgvector | Qdrant)│   + pgvector (free)
                   │              └─ /api/ask(/stream) ▶ Investigator (plan → search → tool loop → answer → verify)
                   │                                          │                                                  │
                   │                 answer cache · rate limiter · metrics · JSON logs                           │
@@ -41,9 +41,9 @@ An evidence-first question-answering system over a 66,000+ document collection. 
 | Layer | Choice | Why |
 |---|---|---|
 | Backend | Python 3.11, FastAPI, Uvicorn | Typed request models, async uploads, SSE streaming. |
-| Vector DB | Qdrant (Cloud free tier in production; local server or embedded mode in development) | Dense **and** sparse vectors in one collection, payload filters, server-side IDF; same client code in all modes. |
-| Embeddings | `BAAI/bge-small-en-v1.5` (384-d) via fastembed / ONNX, run locally | Free, no rate limits for 66k+ documents; small enough for a CPU Space. |
-| Keyword search | Own BM25 encoder → Qdrant sparse vectors with IDF modifier | Exact BM25 with idf computed over the live collection, so adds/deletes need no re-encoding. |
+| Vector DB | **Production:** Neon serverless Postgres + pgvector (free tier, provisioned through the Vercel Marketplace). **Development / evaluation:** Qdrant (local server or embedded). Both implement one `VectorStore` interface (`engine/retrieval/store.py`, `engine/retrieval/pgstore.py`). | pgvector: `halfvec` HNSW index for dense search and `sparsevec` for BM25 in one table, one transaction for chunks + term statistics. Qdrant: fast local bulk indexing and experiments. |
+| Embeddings | `BAAI/bge-small-en-v1.5` (384-d) via fastembed / ONNX, run locally | Free, no rate limits for 66k+ documents; small enough for a serverless CPU. |
+| Keyword search | Own BM25 encoder → sparse vectors (Qdrant: IDF modifier; Postgres: our own `term_df` table and an inner product `sparse <#> q_idf`) | Exact Okapi BM25 with idf over the live collection, so adds/deletes need no re-encoding. |
 | Re-ranker | `Xenova/ms-marco-MiniLM-L-6-v2` cross-encoder (ONNX) | Large precision gain for ~0.5–1 s of CPU per query. |
 | LLM | Google Gemini `gemini-3.5-flash` (thinking level "low"), fallback `gemini-3.5-flash-lite` (free tier) | Free API, native function calling and JSON-schema output. (Gemini 2.5 models are no longer offered to new API keys; the client also falls back automatically on 404.) |
 | UI | Static HTML/CSS/JS served by FastAPI | No build step; the priority is functionality, not visual complexity. |
@@ -125,7 +125,7 @@ uv run python scripts/build_corpus.py
 uv run python scripts/generate_northwind.py
 uv run python scripts/ingest_corpus.py    # ~1 h on a laptop CPU for 66k docs; resumable (embedding cache)
 uv run uvicorn main:app --port 8000       # http://localhost:8000
-uv run pytest                             # 43 tests, no network or API key needed
+uv run pytest                             # 44 tests, no network or API key needed (+1 pgvector test with PG_TEST_DSN)
 ```
 
 Embedded Qdrant (`QDRANT_PATH`) is fine for small sets; for the full corpus run a Qdrant server (`docker run -p 6333:6333 qdrant/qdrant` or the single Windows/Linux binary) and set `QDRANT_URL=http://127.0.0.1:6333`.
@@ -133,30 +133,33 @@ Embedded Qdrant (`QDRANT_PATH`) is fine for small sets; for the full corpus run 
 ## Deployment
 
 ```
-GitHub (code) ──push──▶ Hugging Face Space (Docker SDK, free CPU: 2 vCPU / 16 GB) ──HTTPS──▶ Qdrant Cloud (free 1 GB cluster)
-                                     │                                              └─ persistent: vectors, payload, document registry
-                                     └──HTTPS──▶ Gemini API (free tier)
+GitHub (code) ─ scripts/stage_vercel.py ─▶ Vercel (Python 3.12 function, Fluid Compute, iad1) ──▶ Neon Postgres + pgvector (us-east-1, free)
+                                                  │                                              └─ persistent: chunks, vectors, term_df, document registry
+                                                  └──HTTPS──▶ Gemini API (free tier)
 ```
 
-- **Image:** `Dockerfile` installs `requirements.txt` and bakes both ONNX models into the image, so a cold start does not download models.
-- **Persistence:** all state (chunks, vectors, document registry, uploads) lives in Qdrant Cloud, so restarts and rebuilds of the Space lose nothing. The answer cache is in-memory by design.
-- **Secrets:** `GEMINI_API_KEY`, `QDRANT_URL`, `QDRANT_API_KEY`, `ADMIN_TOKEN` are Space *secrets* (environment variables). `.env` is git-ignored; keys are never logged or returned by the API.
-- **Seeding:** the corpus is indexed once from a workstation with `scripts/ingest_corpus.py` pointed at Qdrant Cloud (the embedding cache makes this an upload, not a re-embedding).
+- **Hosting:** the FastAPI app (`main.py`) is deployed as a single Vercel Python function; the static UI is served by the same app. `scripts/stage_vercel.py` stages only the code and a `requirements.txt` (no data, tests or caches) and `vercel deploy --prod` publishes it. The function runs in `iad1`, next to the Neon database in `us-east-1`.
+- **Database:** Neon serverless Postgres with pgvector, provisioned through the Vercel Marketplace (`vercel integration add neon`), which injects `DATABASE_URL` into the project. Tables: `chunks` (halfvec(384) + HNSW cosine index, sparsevec BM25 weights, text and provenance), `docs` (registry), `term_df` (document frequencies). 294 MB for the full corpus.
+- **Seeding:** the corpus is embedded once on a workstation into a local Qdrant index (`scripts/ingest_corpus.py`, resumable, embedding cache), then copied to Postgres without re-embedding (`scripts/migrate_qdrant_to_pg.py`, ~9 minutes, HNSW built after the bulk load).
+- **Persistence:** all state lives in Postgres, so cold starts, redeploys and scale-to-zero lose nothing. The answer cache and metrics are per instance by design.
+- **Models:** the two ONNX models (~150 MB) are downloaded to `/tmp` on a cold start (`MODEL_CACHE_DIR=/tmp/models`); ONNX threads are pinned to the function's vCPU (`ONNX_THREADS=1`).
+- **Secrets:** `GEMINI_API_KEY`, `ADMIN_TOKEN` and the Neon `DATABASE_URL` are Vercel environment variables; `.env` / `.env.local` are git-ignored; keys are never logged or returned by the API.
+- **Alternative:** the `Dockerfile` runs the same app anywhere (e.g. a Hugging Face Docker Space with `QDRANT_URL` pointing at Qdrant Cloud) — the store backend is selected with `STORE_BACKEND=qdrant|pgvector`.
 
 ## Costs, limits and performance
 
 | Item | Free-tier limit | How it is handled |
 |---|---|---|
-| Hugging Face Space | Sleeps after 48 h without traffic; ~1 min cold start | Documented; models are baked in so a cold start only loads them. The UI shows "Loading models" meanwhile. |
-| Qdrant Cloud | 1 GB RAM / 4 GB disk; suspended after a week of inactivity | ~66k × 384-d vectors + sparse vectors + payload ≈ 0.3–0.5 GB. Vectors stored on disk (`on_disk=True`). |
-| Gemini free tier | Per-minute and per-day request quotas | Answer cache; per-IP rate limit (12 questions/min); retries with server-provided delay; fallback model; graceful `llm_unavailable` mode. |
+| Vercel Hobby function | 2 GB / 1 vCPU, 300 s max duration, 4.5 MB request body, scale to zero | Agentic answers take 15–40 s and stream progress over SSE; uploads limited to 4 MB (`MAX_UPLOAD_MB`). A cold start (model download + load) adds ~10–20 s to the first request. |
+| Neon free | 0.5 GB storage, compute suspends when idle | Full corpus is 294 MB (halfvec halves the dense vector size); first query after suspension takes ~1–2 s longer. |
+| Gemini free tier | Per-model requests-per-day quotas (the `gemini-3.5-flash` daily quota was exhausted during evaluation) | Automatic fallback to `gemini-3.5-flash-lite` on 429/503/404; answer cache; per-IP rate limit (12 questions/min); graceful `llm_unavailable` mode that still returns the evidence. |
 | Agent cost | 3–6 LLM calls per agentic question (plan, 1–4 tool steps, answer); 1 per simple question | Token usage and paid-tier cost equivalent are reported per answer and in `/api/metrics`; measured numbers are in the evaluation report. |
 
-Query latency on the Space CPU is dominated by the cross-encoder (~0.5–1 s for 30 pairs) and the LLM calls; retrieval itself (embedding + two Qdrant queries) is ~50–150 ms. The cross-encoder can be disabled with `ENABLE_CROSS_ENCODER=false`.
+Measured on the live deployment: dense search 15–90 ms and BM25 (exact, full sparse scan) ~100 ms on Neon; query embedding ~20 ms; the cross-encoder dominates retrieval at 1.5–4 s for 20 pairs on one vCPU (`RERANK_POOL=20`; locally ~1 s for 30 pairs). It can be disabled with `ENABLE_CROSS_ENCODER=false` at a measured cost of ~3 points Recall@5 and ~4 points MRR (see the evaluation).
 
 ## Design decisions
 
-- **Local embeddings instead of an embedding API.** Embedding 66k records through a free API would take days of rate-limited calls; a local ONNX model is free, deterministic and also runs in the Space at query time.
+- **Local embeddings instead of an embedding API.** Embedding 66k records through a free API would take days of rate-limited calls; a local ONNX model is free, deterministic and also runs in the serverless function at query time.
 - **Sparse vectors in Qdrant instead of a separate keyword engine.** One database, one consistency domain, filters shared by both retrievers. The BM25 term weighting is ours; Qdrant only multiplies by IDF.
 - **RRF before a cross-encoder.** RRF is robust to the incomparable score scales of cosine and BM25; the cross-encoder then fixes the precision at the top. MMR is applied last because multi-hop questions need *different* documents, not the five best paragraphs about one entity.
 - **Plan + bounded tool loop instead of an open-ended agent.** A fixed upper bound (4 steps) keeps latency and free-tier usage predictable; the loop also stops when tools stop returning new evidence. Each step is stateless (evidence re-rendered into the prompt), which avoids provider-specific multi-turn state.

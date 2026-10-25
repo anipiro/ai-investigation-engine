@@ -39,7 +39,8 @@ class Services:
     def retrieval_config(self, **overrides) -> RetrievalConfig:
         s = self.settings
         base = dict(candidates=s.retrieve_candidates, top_k=s.final_top_k, rrf_k=s.rrf_k, dense_weight=s.dense_weight,
-                    sparse_weight=s.sparse_weight, mmr_lambda=s.mmr_lambda, rerank=self.retriever.cross_encoder is not None)
+                    sparse_weight=s.sparse_weight, mmr_lambda=s.mmr_lambda, rerank=self.retriever.cross_encoder is not None,
+                    rerank_pool=s.rerank_pool)
         base.update({k: v for k, v in overrides.items() if v is not None})
         return RetrievalConfig(**base)
 
@@ -53,10 +54,10 @@ def build_services(settings: Settings, store: VectorStore | None = None, embedde
             store = PgVectorStore(settings)
         else:
             store = VectorStore(settings)
-    embedder = embedder or FastEmbedder(settings.embedding_model, cache_dir=settings.model_cache_dir)
+    embedder = embedder or FastEmbedder(settings.embedding_model, cache_dir=settings.model_cache_dir, threads=settings.onnx_threads)
     if cross_encoder is None and settings.enable_cross_encoder:
         try:
-            cross_encoder = CrossEncoder(settings.reranker_model, cache_dir=settings.model_cache_dir)
+            cross_encoder = CrossEncoder(settings.reranker_model, cache_dir=settings.model_cache_dir, threads=settings.onnx_threads)
         except Exception as exc:  # model download failure must not take the API down
             log.warning("cross-encoder unavailable, continuing without it: %s", exc)
             cross_encoder = None
