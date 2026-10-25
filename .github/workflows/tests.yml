@@ -1,8 +1,10 @@
 name: tests
 
+# Push/PR triggers are paused while the GitHub account's Actions billing lock is unresolved
+# (jobs are rejected before they start). Re-enable them by restoring:
+#   on: { push: {}, pull_request: {} }
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   pytest:
