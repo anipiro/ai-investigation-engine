@@ -1,119 +1,140 @@
-# AI Investigation Engine
+# AI investigation engine
 
-An evidence-first question-answering system over a 66,000+ document collection. It does more than "chat with a PDF": it plans multi-step investigations, follows leads across documents, flags contradictions, refuses to answer when the evidence is missing, and cites (and verifies) every claim.
+A question-answering system over a collection of 66,802 documents that plans a multi-step search, cites every claim, reports when sources disagree and declines to answer when the evidence is missing. On a 49-question test set it answered 91.8% correctly and declined all 7 unanswerable questions; its default retriever finds 88.5% of the gold documents in the top 10.
 
-> *"Which system changes caused the payment processing delays in March 2024, which services were affected, and which documents confirm this?"*
-> → plans sub-questions → searches the change log, incident report and post-mortem → follows the change ids it discovers → answers with `[S#]` citations, and points out that the incident report and the post-mortem disagree on the duration and on the primary root cause.
+A real answer from the evaluation run (`eval/results/e2e_agentic.jsonl`, question `nw-03`):
 
-- **Live demo:** https://ai-investigation-engine.vercel.app (API docs: `/docs`)
-- **Evaluation report:** [EVALUATION.md](EVALUATION.md)
+```text
+Q: What share of payments was affected by INC-2024-031?
 
-## Contents
+status: conflicting
+A: Sources disagree on the share of payments affected by INC-2024-031: the incident
+   report states that approximately 18% of card payment attempts failed with a
+   timeout [S1], whereas the status page states that fewer than 5% of payments were
+   affected [S3].
 
-1. [Architecture](#architecture)
-2. [Data](#data)
-3. [Ingestion](#ingestion)
-4. [Retrieval](#retrieval)
-5. [Agent and answers](#agent-and-answers)
-6. [API](#api)
-7. [Running locally](#running-locally)
-8. [Deployment](#deployment)
-9. [Costs, limits and performance](#costs-limits-and-performance)
-10. [Design decisions](#design-decisions)
-11. [Project layout](#project-layout)
-
-## Architecture
-
-```
-                 ┌──────────────────────── FastAPI (Vercel Python function, Fluid Compute) ────────────────────┐
- browser ──HTTP──▶  REST + SSE  ─┬─ /api/documents ──▶ parsers ─▶ chunker ─▶ dedup ─▶ embed + BM25 ─┐         │
-  (static UI)     │              │                                                                    ▼         │
-                  │              ├─ /api/search ───▶ HybridRetriever ◀── dense + sparse queries ── VectorStore ◀─┼── Neon Postgres
-                  │              │                   (RRF, title boost, cross-encoder, MMR)       (pgvector | Qdrant)│   + pgvector (free)
-                  │              └─ /api/ask(/stream) ▶ Investigator (plan → search → tool loop → answer → verify)
-                  │                                          │                                                  │
-                  │                 answer cache · rate limiter · metrics · JSON logs                           │
-                  └──────────────────────────────────────────┼──────────────────────────────────────────────────┘
-                                                             ▼
-                                                 Gemini API (generateContent; function calling, JSON schema)
+[S1] Incident Report INC-2024-031: Payment processing delays
+[S3] status_page_2024-03-12
 ```
 
-| Layer | Choice | Why |
+- Live demo: https://ai-investigation-engine.vercel.app (API docs at `/docs`)
+- Evaluation report: [EVALUATION.md](EVALUATION.md)
+
+## What it does
+
+- **Ingests mixed documents.** PDF, DOCX, Markdown, text, HTML, JSON and JSONL are parsed, chunked, de-duplicated and indexed. Documents can be created, replaced and deleted through the API.
+- **Searches two ways and merges the results.** Dense vector search and a hand-written BM25 are fused, re-ranked with a cross-encoder and diversified so the context covers several documents.
+- **Investigates in steps.** The agent plans sub-questions, retrieves for each, then may run further searches or read a whole document, for up to 4 tool steps.
+- **Cites and checks.** Answers carry `[S#]` citations. Unknown citation ids are removed, each claim is scored against its cited passages, and an answer with no valid citation is downgraded to `insufficient`.
+- **Reports conflicts and gaps.** Every answer has a status: `answered`, `conflicting` or `insufficient`. Conflicts list the citations on each side.
+- **Treats documents as data.** Chunks with instruction-like text are flagged at ingestion, and evidence is passed to the model inside tags with tag-like text neutralised.
+
+## Results
+
+Measured by `eval/run_eval.py` on 2026-10-25 against the full corpus (66,802 documents, 70,156 chunks) on a laptop CPU. The tables are copied from `eval/results/tables.md`; [EVALUATION.md](EVALUATION.md) has the method, per-category breakdowns and failure analysis.
+
+Retrieval, 343 questions with gold documents, `recursive` chunking:
+
+| Retriever | Recall@5 | Recall@10 | All gold @10 | MRR | nDCG@10 | ms/query |
+|---|---|---|---|---|---|---|
+| dense | 72.8% | 78.4% | 62.7% | 0.859 | 0.745 | 22 |
+| bm25 | 70.5% | 81.4% | 63.8% | 0.883 | 0.746 | 15 |
+| hybrid_rrf | 79.3% | 85.6% | 71.4% | 0.892 | 0.791 | 38 |
+| hybrid_rrf+title | 81.4% | 86.4% | 73.2% | 0.895 | 0.800 | 32 |
+| hybrid+rerank | 84.0% | 88.6% | 77.5% | 0.938 | 0.844 | 1016 |
+| hybrid+rerank+mmr (default) | 83.2% | 88.5% | 77.3% | 0.938 | 0.843 | 1520 |
+
+Answers, 49 questions, `agentic` against the single-retrieval `simple` baseline:
+
+| Metric | agentic | simple |
 |---|---|---|
-| Backend | Python 3.11, FastAPI, Uvicorn | Typed request models, async uploads, SSE streaming. |
-| Vector DB | **Production:** Neon serverless Postgres + pgvector (free tier, provisioned through the Vercel Marketplace). **Development / evaluation:** Qdrant (local server or embedded). Both implement one `VectorStore` interface (`engine/retrieval/store.py`, `engine/retrieval/pgstore.py`). | pgvector: `halfvec` HNSW index for dense search and `sparsevec` for BM25 in one table, one transaction for chunks + term statistics. Qdrant: fast local bulk indexing and experiments. |
-| Embeddings | `BAAI/bge-small-en-v1.5` (384-d) via fastembed / ONNX, run locally | Free, no rate limits for 66k+ documents; small enough for a serverless CPU. |
-| Keyword search | Own BM25 encoder → sparse vectors (Qdrant: IDF modifier; Postgres: our own `term_df` table and an inner product `sparse <#> q_idf`) | Exact Okapi BM25 with idf over the live collection, so adds/deletes need no re-encoding. |
-| Re-ranker | `Xenova/ms-marco-MiniLM-L-6-v2` cross-encoder (ONNX) | Large precision gain for ~0.5–1 s of CPU per query. |
-| LLM | Google Gemini `gemini-3.5-flash` (thinking level "low"), fallback `gemini-3.5-flash-lite` (free tier) | Free API, native function calling and JSON-schema output. (Gemini 2.5 models are no longer offered to new API keys; the client also falls back automatically on 404.) |
-| UI | Static HTML/CSS/JS served by FastAPI | No build step; the priority is functionality, not visual complexity. |
+| Answer correctness (LLM judge) | 91.8% | 91.8% |
+| Key facts present | 90.7% | 90.7% |
+| Citation precision | 92.5% | 92.3% |
+| Citation recall | 92.1% | 94.4% |
+| Correct abstention (unanswerable) | 100.0% | 100.0% |
+| False abstention (answerable) | 7.1% | 7.1% |
+| Conflict detected | 100.0% | 100.0% |
+| Injection resisted | 100.0% | 100.0% |
+| Mean latency (ms) | 9,254 | 2,528 |
+| LLM calls / question | 3.5 | 1.0 |
+| Tokens / question | 5,475 | 1,950 |
 
-## Data
+How to read these:
 
-`scripts/build_corpus.py` builds a reproducible corpus from public sources (it writes `data/corpus/build_report.json` with these counts):
+- Hybrid search beats either retriever alone, and the cross-encoder gives the largest gain at the top of the ranking (MRR 0.895 to 0.938) for about 1 s of CPU per query.
+- MMR and the `recursive` chunking did not improve this benchmark. Both are kept as defaults for reasons the numbers do not support on their own; EVALUATION.md explains why.
+- The agent did not beat the single-retrieval baseline here, while costing 3.5 times the LLM calls.
+- 49 questions give wide confidence intervals (about ±8 points at 90%). The conflict and injection questions come from a synthetic set written by the same author, so their 100% scores show the mechanisms work rather than measure difficulty.
+- Answers were generated by `gemini-3.5-flash-lite` and judged by `gemini-3.1-flash-lite`, because the daily free quota of `gemini-3.5-flash` was used up during development.
+
+## How it is built
+
+| Part | Technology |
+|---|---|
+| Backend | Python 3.11, FastAPI, Uvicorn, Server-Sent Events for streaming |
+| Vector store | Neon Postgres with pgvector in production; Qdrant for development and evaluation. Both sit behind one `VectorStore` interface (`engine/retrieval/store.py`, `engine/retrieval/pgstore.py`) |
+| Embeddings | `BAAI/bge-small-en-v1.5` (384-d), run locally through fastembed / ONNX |
+| Keyword search | Own BM25 encoder producing sparse vectors (`engine/retrieval/sparse.py`) |
+| Re-ranker | `Xenova/ms-marco-MiniLM-L-6-v2` cross-encoder (ONNX) |
+| LLM | Google Gemini `gemini-3.5-flash`, fallback `gemini-3.5-flash-lite` |
+| UI | Static HTML, CSS and JavaScript served by FastAPI (`engine/web/`) |
+
+```
+browser ── REST + SSE ──▶ FastAPI (engine/api/app.py)
+                            ├─ /api/documents ─▶ parsers ─▶ chunker ─▶ dedup ─▶ embed + BM25 ─▶ VectorStore
+                            ├─ /api/search ────▶ HybridRetriever (RRF, title boost, cross-encoder, MMR)
+                            └─ /api/ask ───────▶ Investigator (plan ─▶ search ─▶ tool loop ─▶ answer ─▶ verify) ─▶ Gemini API
+```
+
+No LangChain or LlamaIndex: the pipeline is short enough to own, which keeps every stage observable and testable.
+
+### Data
+
+`scripts/build_corpus.py` builds a reproducible corpus from public sources, seeded with `random.Random(42)`.
 
 | Source | Records | Use |
 |---|---|---|
-| [HotpotQA](https://huggingface.co/datasets/hotpotqa/hotpot_qa), *distractor* config, *validation* split | 73,700 paragraphs → **66,552 unique** (7,047 repeated titles, 40 same-text-different-title duplicates, 61 same-title-different-text conflicts removed) | Multi-hop questions with gold supporting documents → Recall@K / MRR. |
-| [danluu/post-mortems](https://github.com/danluu/post-mortems) | **240** incident summaries | Real incident data in the domain of the brief. |
-| Synthetic *Northwind Pay* set (`scripts/generate_northwind.py`) | 11 files in 6 formats (pdf, docx, md, html, json, txt) | The brief's own scenario, with planted cross-document links, contradictions, gaps, a prompt injection, an exact and a near duplicate. |
+| [HotpotQA](https://huggingface.co/datasets/hotpotqa/hotpot_qa), distractor config, validation split | 73,700 paragraphs, **66,552 unique** after removing 7,047 repeated titles, 40 same-text duplicates and 61 same-title conflicts | Multi-hop questions with gold supporting documents, for Recall@K and MRR |
+| [danluu/post-mortems](https://github.com/danluu/post-mortems) | **240** incident summaries | Real incident write-ups |
+| Synthetic Northwind Pay set (`scripts/generate_northwind.py`) | 11 files in 6 formats (pdf, docx, md, html, json, txt) | Planted cross-document links, contradictions, gaps, a prompt injection, an exact and a near duplicate |
 
-**Why this subset.** The validation split is the only HotpotQA split with gold supporting facts *and* a manageable size: all 7,405 questions' gold and distractor paragraphs are indexed (66k records, above the 50k requirement), so every question is a needle-in-a-66k-haystack problem, while the whole index (~120 MB of vectors and payload) fits the Qdrant Cloud free tier and embeds in about an hour on a laptop CPU. Everything is seeded and deterministic (`random.Random(42)`), so the evaluation is repeatable.
+All 7,405 validation questions' gold and distractor paragraphs are indexed, so every question competes against about 66k paragraphs rather than its own 10 distractors.
 
-## Ingestion
+### Ingestion
 
-`parse → normalise → chunk → de-duplicate → embed (dense) + encode (BM25) → upsert`
+`parse → normalise → chunk → de-duplicate → embed (dense) + encode (BM25) → upsert`, in `engine/ingestion/`.
 
-- **Formats:** `.pdf` (pypdf, keeps page numbers), `.docx` (python-docx, headings become markdown headings, tables kept), `.md`/`.txt`, `.html` (scripts/nav stripped, headings kept), `.json`/`.jsonl` (records flattened). Metadata (title, author, dates, page count, filename) is extracted per format.
-- **Chunking — two strategies, compared in the evaluation:**
-  - `fixed`: 180-word sliding window, 30-word overlap. Structure-blind.
-  - `recursive` (default): section → paragraph → sentence; packs whole units up to 180 words, overlaps by whole trailing sentences, never cuts a sentence, and stores the heading path (`Report > Root cause`) with each chunk.
-  - Every chunk is embedded with a *contextual header* (document title and section), which matters for short Wikipedia paragraphs whose subject is only in the title.
-- **Duplicates:** exact duplicates are detected on a normalised SHA-256 content hash (re-uploads are `unchanged`, identical content under a new name is `duplicate` and not indexed); near-duplicates are detected with a 64-bit SimHash over word 3-shingles (Hamming ≤ 3) against the nearest dense neighbours and reported; repeated blocks inside one document are dropped.
-- **Create / update / delete:** documents are keyed by `doc_id`. A changed upload replaces all of the document's chunks atomically from the user's point of view; delete removes chunks and the registry entry. Seed-corpus documents are protected by an admin token.
-- **Prompt-injection screening:** chunks containing instruction-like text are flagged at ingestion (`suspicious`) and shown with a warning.
+- **Formats.** `.pdf` (pypdf, keeps page numbers), `.docx` (python-docx, headings and tables kept), `.md`/`.txt`, `.html` (scripts and navigation stripped), `.json`/`.jsonl` (records flattened). Title, author, dates, page count and filename are extracted per format.
+- **Chunking.** `recursive` (default) splits by section, paragraph and sentence, packs whole units up to 180 words, never cuts a sentence and stores the heading path with each chunk. `fixed` is a 180-word sliding window with a 30-word overlap. Every chunk is embedded with a header naming its document title and section.
+- **Duplicates.** Exact duplicates are caught by a normalised SHA-256 content hash: a re-upload is `unchanged`, identical content under a new name is `duplicate` and not indexed. Near-duplicates are detected with a 64-bit SimHash over word 3-shingles (Hamming distance ≤ 3) and reported.
+- **Updates.** Documents are keyed by `doc_id`. A changed upload replaces all of the document's chunks; delete removes the chunks and the registry entry. Seed-corpus documents are protected by an admin token.
 
-## Retrieval
+### Retrieval
 
-Our own ranking pipeline (`engine/retrieval/hybrid.py`) on top of Qdrant's two indexes:
+`engine/retrieval/hybrid.py`:
 
-1. **Candidates:** top-40 from dense (cosine HNSW) and top-40 from BM25 (sparse).
-2. **Weighted Reciprocal Rank Fusion:** `score = Σ w_r / (60 + rank_r)`.
-3. **Title boost:** if the query names a document's full title, add half a rank-1 RRF contribution — the bridge entity of a multi-hop question is usually a title.
-4. **Cross-encoder blend:** re-score the top 30 with a cross-encoder and blend min-max normalised scores (0.7 cross-encoder / 0.3 fusion).
-5. **Document-aware MMR:** pick the final *k* by maximal marginal relevance (λ = 0.75) on the dense vectors with at most two chunks per document, so the context covers several sources instead of five chunks of one.
+1. **Candidates.** Top 40 from dense search (cosine HNSW) and top 40 from BM25.
+2. **Weighted Reciprocal Rank Fusion.** `score = Σ w_r / (60 + rank_r)`.
+3. **Title boost.** If the query names a document's full title, add half a rank-1 RRF contribution.
+4. **Cross-encoder blend.** Re-score the top 30 and blend min-max normalised scores, 0.7 cross-encoder to 0.3 fusion.
+5. **Document-aware MMR.** Pick the final results by maximal marginal relevance (λ = 0.75) with at most two chunks per document.
 
-The *Search lab* tab shows each stage's ranks and scores for any query.
+BM25 idf is computed over the live collection (Qdrant's IDF modifier, or a `term_df` table in Postgres), so adding or deleting documents needs no re-encoding. The Search lab tab in the UI shows each stage's ranks and scores for any query.
 
-## Agent and answers
+### Agent and answers
 
 `engine/agent/investigator.py`:
 
 1. **Plan** (JSON-schema output): sub-questions and keyword-rich search queries.
 2. **Retrieve** each planned query; results are pooled and labelled `S1…Sn`.
-3. **Investigate** (function calling, up to 4 steps): the model sees the evidence so far and may call `search_documents(query, source?)` to follow a newly discovered entity, `read_document(doc_id)` to read a whole document, or `finish(reason)`.
-4. **Answer** (JSON schema): `status` (`answered` / `insufficient` / `conflicting`), prose answer with inline `[S#]` citations, short answer, atomic claims with citations, conflicts with the citations on each side, missing information, confidence.
-5. **Verify:** unknown citation ids are removed; each claim's lexical support in its cited passages is scored; an "answered" response with no valid citation is downgraded to `insufficient`.
+3. **Investigate** (function calling, up to 4 steps): the model may call `search_documents(query, source?)`, `read_document(doc_id)` or `finish(reason)`.
+4. **Answer** (JSON schema): status, prose answer with `[S#]` citations, short answer, atomic claims, conflicts, missing information, confidence.
+5. **Verify** (`engine/agent/citations.py`): strip unknown citation ids, score each claim's lexical support, downgrade uncited answers.
 
-**Grounding and safety.** Evidence is passed inside `<doc id="S#">` tags with any tag-like text neutralised, the system prompt treats document text as data, and flagged chunks are announced as suspected injections. **Failure handling:** retries with backoff (honouring the server's `retryDelay`), fallback model, client-side pacing, typed errors; if the model is unavailable the API still returns the retrieved evidence with status `llm_unavailable` instead of an error. A `simple` mode (one retrieval → answer) is kept as the evaluation baseline.
+The Gemini client (`engine/llm/gemini.py`) retries with backoff and falls back to the second model. If the model is unavailable, the API still returns the retrieved evidence with status `llm_unavailable`.
 
-## API
-
-Interactive docs at `/docs` (OpenAPI).
-
-| Method | Path | Purpose |
-|---|---|---|
-| `POST` | `/api/documents` | Upload one or more files (multipart `files`). Returns `created` / `updated` / `unchanged` / `duplicate` per file. |
-| `GET` | `/api/documents?source=&q=&limit=&cursor=` | List / filter documents (cursor pagination). |
-| `GET` | `/api/documents/{doc_id}` | Document metadata and all its chunks. |
-| `PUT` | `/api/documents/{doc_id}` | Replace a document's content. |
-| `DELETE` | `/api/documents/{doc_id}` | Delete a document. Seed-corpus documents need `X-Admin-Token`. |
-| `POST` | `/api/search` | Retrieval only: `{query, mode: dense|sparse|hybrid, rerank, mmr, top_k, sources}` with per-stage debug scores. |
-| `POST` | `/api/ask` | `{question, mode: agentic|simple, sources}` → answer, citations, sources, plan, trace, token usage. |
-| `POST` | `/api/ask/stream` | Same, as Server-Sent Events: `plan`, `search`, `tool_call`, `finish`, `synthesis`, `result`. |
-| `GET` | `/api/health`, `/api/stats`, `/api/metrics` | Dependencies, index size, counters, latency percentiles, LLM tokens and paid-tier cost equivalent. |
-
-## Running locally
+## Run it
 
 Requirements: Python 3.11 and [uv](https://docs.astral.sh/uv/). No GPU.
 
@@ -125,59 +146,53 @@ uv run python scripts/build_corpus.py
 uv run python scripts/generate_northwind.py
 uv run python scripts/ingest_corpus.py    # ~1 h on a laptop CPU for 66k docs; resumable (embedding cache)
 uv run uvicorn main:app --port 8000       # http://localhost:8000
-uv run pytest                             # 44 tests, no network or API key needed (+1 pgvector test with PG_TEST_DSN)
+uv run pytest                             # no network or API key needed; one extra pgvector test runs with PG_TEST_DSN
 ```
 
-Embedded Qdrant (`QDRANT_PATH`) is fine for small sets; for the full corpus run a Qdrant server (`docker run -p 6333:6333 qdrant/qdrant` or the single Windows/Linux binary) and set `QDRANT_URL=http://127.0.0.1:6333`.
+Embedded Qdrant (`QDRANT_PATH`) is fine for small sets. For the full corpus run a Qdrant server (`docker run -p 6333:6333 qdrant/qdrant`) and set `QDRANT_URL=http://127.0.0.1:6333`.
+
+To regenerate the evaluation:
+
+```bash
+uv run python eval/build_questions.py        # deterministic question set (seed 42)
+uv run python eval/run_eval.py retrieval     # no LLM: Recall@K / MRR / nDCG
+uv run python eval/run_eval.py e2e --modes simple agentic   # LLM answers + LLM judge (resumable)
+uv run python eval/run_eval.py report        # writes eval/results/tables.md
+```
+
+API (interactive docs at `/docs`):
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/documents` | Upload one or more files (multipart `files`). Returns `created` / `updated` / `unchanged` / `duplicate` per file. |
+| `GET` | `/api/documents?source=&q=&limit=&cursor=` | List and filter documents (cursor pagination). |
+| `GET` | `/api/documents/{doc_id}` | Document metadata and all its chunks. |
+| `PUT` | `/api/documents/{doc_id}` | Replace a document's content. |
+| `DELETE` | `/api/documents/{doc_id}` | Delete a document. Seed-corpus documents need `X-Admin-Token`. |
+| `POST` | `/api/search` | Retrieval only: `{query, mode: dense\|sparse\|hybrid, rerank, mmr, top_k, sources}` with per-stage debug scores. |
+| `POST` | `/api/ask` | `{question, mode: agentic\|simple, sources}` → answer, citations, sources, plan, trace, token usage. |
+| `POST` | `/api/ask/stream` | Same, as Server-Sent Events: `plan`, `search`, `tool_call`, `finish`, `synthesis`, `result`. |
+| `GET` | `/api/health`, `/api/stats`, `/api/metrics` | Dependencies, index size, counters, latency percentiles, LLM token usage. |
 
 ## Deployment
 
-```
-GitHub (code) ─ scripts/stage_vercel.py ─▶ Vercel (Python 3.12 function, Fluid Compute, iad1) ──▶ Neon Postgres + pgvector (us-east-1, free)
-                                                  │                                              └─ persistent: chunks, vectors, term_df, document registry
-                                                  └──HTTPS──▶ Gemini API (free tier)
-```
+The live demo runs on free tiers: a Vercel Python function for the app, Neon Postgres with pgvector for all state, and the Gemini API.
 
-- **Hosting:** the FastAPI app (`main.py`) is deployed as a single Vercel Python function; the static UI is served by the same app. `scripts/stage_vercel.py` stages only the code and a `requirements.txt` (no data, tests or caches) and `vercel deploy --prod` publishes it. The function runs in `iad1`, next to the Neon database in `us-east-1`.
-- **Database:** Neon serverless Postgres with pgvector, provisioned through the Vercel Marketplace (`vercel integration add neon`), which injects `DATABASE_URL` into the project. Tables: `chunks` (halfvec(384) + HNSW cosine index, sparsevec BM25 weights, text and provenance), `docs` (registry), `term_df` (document frequencies). 294 MB for the full corpus.
-- **Seeding:** the corpus is embedded once on a workstation into a local Qdrant index (`scripts/ingest_corpus.py`, resumable, embedding cache), then copied to Postgres without re-embedding (`scripts/migrate_qdrant_to_pg.py`, ~9 minutes, HNSW built after the bulk load).
-- **Persistence:** all state lives in Postgres, so cold starts, redeploys and scale-to-zero lose nothing. The answer cache and metrics are per instance by design.
-- **Models:** the two ONNX models (~150 MB) are downloaded to `/tmp` on a cold start (`MODEL_CACHE_DIR=/tmp/models`); ONNX threads are pinned to the function's vCPU (`ONNX_THREADS=1`).
-- **Secrets:** `GEMINI_API_KEY`, `ADMIN_TOKEN` and the Neon `DATABASE_URL` are Vercel environment variables; `.env` / `.env.local` are git-ignored; keys are never logged or returned by the API.
-- **Alternative:** the `Dockerfile` runs the same app anywhere (e.g. a Hugging Face Docker Space with `QDRANT_URL` pointing at Qdrant Cloud) — the store backend is selected with `STORE_BACKEND=qdrant|pgvector`.
+- **Hosting.** `scripts/stage_vercel.py` stages only the code and a `requirements.txt`, and `vercel deploy --prod` publishes it as one Python function that also serves the UI.
+- **Database.** Tables `chunks` (halfvec(384) with an HNSW cosine index, sparsevec BM25 weights, text and provenance), `docs` and `term_df`. The full corpus takes 294 MB of the 0.5 GB free tier.
+- **Seeding.** The corpus is embedded once into a local Qdrant index, then copied to Postgres without re-embedding (`scripts/migrate_qdrant_to_pg.py`, about 9 minutes).
+- **Models.** The two ONNX models (~150 MB) are downloaded to `/tmp` on a cold start, which adds about 10–20 s to the first request.
+- **Secrets.** `GEMINI_API_KEY`, `ADMIN_TOKEN` and `DATABASE_URL` are environment variables. `.env` is git-ignored.
+- **Alternative.** The `Dockerfile` runs the same app anywhere; the store is selected with `STORE_BACKEND=qdrant|pgvector`.
 
-## Costs, limits and performance
+Measured on the live deployment: dense search 15–90 ms and BM25 about 100 ms on Neon, query embedding about 20 ms, and the cross-encoder 1.5–4 s for 20 pairs on one vCPU (`RERANK_POOL=20`). An agentic answer takes 15–40 s and streams its progress. The re-ranker can be turned off with `ENABLE_CROSS_ENCODER=false` at a cost of about 3 points Recall@5 and 4 points MRR. Uploads are limited to 4 MB on Vercel (`MAX_UPLOAD_MB`), and questions are rate-limited to 12 per minute per IP.
 
-| Item | Free-tier limit | How it is handled |
-|---|---|---|
-| Vercel Hobby function | 2 GB / 1 vCPU, 300 s max duration, 4.5 MB request body, scale to zero | Agentic answers take 15–40 s and stream progress over SSE; uploads limited to 4 MB (`MAX_UPLOAD_MB`). A cold start (model download + load) adds ~10–20 s to the first request. |
-| Neon free | 0.5 GB storage, compute suspends when idle | Full corpus is 294 MB (halfvec halves the dense vector size); first query after suspension takes ~1–2 s longer. |
-| Gemini free tier | Per-model requests-per-day quotas (the `gemini-3.5-flash` daily quota was exhausted during evaluation) | Automatic fallback to `gemini-3.5-flash-lite` on 429/503/404; answer cache; per-IP rate limit (12 questions/min); graceful `llm_unavailable` mode that still returns the evidence. |
-| Agent cost | 3–6 LLM calls per agentic question (plan, 1–4 tool steps, answer); 1 per simple question | Token usage and paid-tier cost equivalent are reported per answer and in `/api/metrics`; measured numbers are in the evaluation report. |
+## Limits and what I would do next
 
-Measured on the live deployment: dense search 15–90 ms and BM25 (exact, full sparse scan) ~100 ms on Neon; query embedding ~20 ms; the cross-encoder dominates retrieval at 1.5–4 s for 20 pairs on one vCPU (`RERANK_POOL=20`; locally ~1 s for 30 pairs). It can be disabled with `ENABLE_CROSS_ENCODER=false` at a measured cost of ~3 points Recall@5 and ~4 points MRR (see the evaluation).
-
-## Design decisions
-
-- **Local embeddings instead of an embedding API.** Embedding 66k records through a free API would take days of rate-limited calls; a local ONNX model is free, deterministic and also runs in the serverless function at query time.
-- **Sparse vectors in Qdrant instead of a separate keyword engine.** One database, one consistency domain, filters shared by both retrievers. The BM25 term weighting is ours; Qdrant only multiplies by IDF.
-- **RRF before a cross-encoder.** RRF is robust to the incomparable score scales of cosine and BM25; the cross-encoder then fixes the precision at the top. MMR is applied last because multi-hop questions need *different* documents, not the five best paragraphs about one entity.
-- **Plan + bounded tool loop instead of an open-ended agent.** A fixed upper bound (4 steps) keeps latency and free-tier usage predictable; the loop also stops when tools stop returning new evidence. Each step is stateless (evidence re-rendered into the prompt), which avoids provider-specific multi-turn state.
-- **Structured answers + post-hoc verification.** Citations are only as good as their check: unknown ids are stripped, weakly supported claims are flagged, and an answer without valid citations cannot be reported as answered.
-- **No frameworks (LangChain/LlamaIndex).** The pipeline is short enough to own, and owning it makes every stage observable and testable.
-
-## Project layout
-
-```
-engine/
-  ingestion/   parsers.py, chunking.py, dedup.py, pipeline.py
-  retrieval/   embeddings.py, sparse.py (BM25), store.py (Qdrant), hybrid.py (fusion, re-ranking, MMR)
-  llm/         gemini.py (client, retries, fallback)
-  agent/       prompts.py, investigator.py, citations.py
-  api/app.py   FastAPI routes, SSE, rate limiting
-  web/         index.html, app.css, app.js
-  config.py, services.py, cache.py, observability.py, security.py, datasets.py
-scripts/       build_corpus.py, generate_northwind.py, ingest_corpus.py
-eval/          questions.jsonl (49), retrieval_questions.jsonl (300), metrics.py, run_eval.py, results/
-tests/         43 unit / integration tests (in-memory Qdrant, fake Gemini transport)
-```
+- **Second-hop retrieval is the main failure.** Bridge questions reach 85.0% Recall@10 against 99.2% for comparison questions, and 2 of the 4 wrong answers come from a second document that was never retrieved. Next step: extract entities and titles from the first results and search for them automatically.
+- **The agent costs more than it returns on this test set.** It should run only for questions the planner labels multi-hop, or when the first retrieval is weak.
+- **The agent repeats itself.** One trace spent 4 of its 7 searches on paraphrases of the same query. Near-identical tool calls should be rejected.
+- **Abstention is slightly over-cautious.** 7.1% of answerable questions were declined.
+- **The evaluation is small.** 49 answer questions and one LLM judge. A larger set and a human-checked sample of judge verdicts would tighten it.
+- **Chunking is untested on long documents.** 95.4% of HotpotQA paragraphs fit in one 180-word chunk, so the two strategies rarely differ on this corpus.
+- **Free-tier limits.** Gemini has daily request quotas, Neon suspends when idle (the first query after that takes 1–2 s longer), and the answer cache and metrics are per instance.
